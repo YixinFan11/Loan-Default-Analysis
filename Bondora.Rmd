@@ -1,0 +1,373 @@
+---
+title: 'Appendix B: R code for Bondora analysis'
+author: "Yixin Fan"
+output:
+  word_document: default
+---
+
+
+```{r,warning=FALSE} 
+require(ROCR)
+require(class)
+require(glmnet)
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(tidyverse)
+library(lubridate)
+```
+
+
+```{r}
+credit <- read.csv(file = 'LoanData_Bondora.csv')
+```
+
+
+
+```{r}
+summary(credit)
+```
+
+
+
+```{r,warning=FALSE}
+credit[credit == ""] <- NA
+drop1 <- c("ReportAsOfEOD", "LoanId", "LoanNumber","UserName")
+credit1<-credit[ , !(names(credit) %in% drop1)]
+library(tidyverse)
+credit1<-credit1[!(credit1$Status=="Current"),]
+credit1 <- credit1[, colMeans(is.na(credit1)) <= .50]
+
+summary(credit1)
+```
+
+```{r}
+# delete the column with clear strong correlations
+credit2 <- credit1[ -c(32:38) ]
+#change the format to date
+credit2[ c(1:2,7:12,41,43,45,50,59)] <- lapply(credit2[c(1:2,7:12,41,43,45,50,59)], as.Date)
+summary(credit2)
+```
+```{r}
+#Test how to figure out the time before and during the pandemic
+credittest1<- data.frame(credit2$MaturityDate_Original, credit2$MaturityDate_Last, credit2$ContractEndDate,credit2$LastPaymentOn, credit2$DefaultDate, credit2$Status)
+
+credittest1$credit2.LastPaymentOn <- with(credittest1, ifelse(is.na(credit2.LastPaymentOn), credit2.DefaultDate, credit2.LastPaymentOn), origin = "1970-01-01")
+
+credittest2<-credittest1[is.na(credittest1$credit2.LastPaymentOn ),]
+summary(credittest2)
+```
+
+
+
+```{r}
+#set the date to determine the pademic period
+credit2$LastPaymentOn <- with(credit2, as.Date(ifelse(is.na(LastPaymentOn), DefaultDate, LastPaymentOn), origin = "1970-01-01"))
+credit2$LastPaymentOn <- with(credit2, as.Date(ifelse(is.na(LastPaymentOn), ContractEndDate, LastPaymentOn), origin = "1970-01-01"))
+credit2$LastPaymentOn <- with(credit2, as.Date(ifelse(is.na(LastPaymentOn), MaturityDate_Last, LastPaymentOn), origin = "1970-01-01"))
+credit3<-credit2[ -c(9,11,12,50) ]
+summary(credit3)
+```
+```{r, warning=FALSE}
+#delete the relative date
+start_date_vars2 <- c("ListedOnUTC", "BiddingStartedOn", "LoanApplicationStartedDate", "LoanDate", "FirstPaymentDate")
+credit3 %>% select_(.dots = start_date_vars2) %>% gather(key="vars",value="amounts") %>%
+  ggplot(aes(x=amounts))+geom_histogram()+facet_grid(.~vars)
+drops1 <- c("ListedOnUTC", "BiddingStartedOn", "LoanApplicationStartedDate","FirstPaymentDate")
+credit3<-credit3[ , !(names(credit3) %in% drops1)]
+```
+
+
+
+```{r, warning=FALSE}
+#delete the relative date
+start_date_vars1 <- c("LastPaymentOn", "DebtOccuredOn", "DebtOccuredOnForSecondary", "StageActiveSince")
+credit3 %>% select_(.dots = start_date_vars1) %>% gather(key="vars",value="amounts") %>%
+  ggplot(aes(x=amounts))+geom_histogram()+facet_grid(.~vars)
+credit3<-credit3[ , !(names(credit3) %in% c("DebtOccuredOnForSecondary"))]
+```
+
+```{r, warning=FALSE}
+start_date_vars3 <- c("AppliedAmount", "Amount")
+credit3 %>% select_(.dots = start_date_vars3) %>% gather(key="vars",value="amounts") %>%
+  ggplot(aes(x=amounts))+geom_histogram()+facet_grid(.~vars)
+credit3<-credit3[ , !(names(credit3) %in% c("AppliedAmount"))]
+```
+
+```{r, warning=FALSE}
+#probability of default
+credit3<-credit3[ , !(names(credit3) %in% c("ProbabilityOfDefault"))]
+```
+
+```{r}
+credit3 <- credit3[, colMeans(is.na(credit3)) <= .10]
+colSums(is.na(credit3))
+```
+
+
+
+```{r}
+creditdate<-credit3[sapply(credit3, class) == "Date"]
+creditfac<-credit3[sapply(credit3, class) == "factor"]
+creditint<-credit3[sapply(credit3, class) == "integer"]
+creditnum<-credit3[sapply(credit3, class) == "numeric"]
+```
+
+```{r}
+summary(creditfac)
+```
+
+
+```{r}
+credit4<-credit3
+credit4<-credit4[ , !(names(credit4) %in% c("ActiveScheduleFirstPaymentReached"))]
+credit4$NewCreditCustomer<-ifelse(credit4$NewCreditCustomer=="True",0,1)
+credit4$Restructured<-ifelse(credit4$Restructured=="True",0,1)
+credit4$Status<-ifelse(credit4$Status=="Repaid",0,1)
+credit4$Country<-as.numeric(credit4$Country)
+```
+
+```{r}
+woe.tab <- function(x,y) {
+ n1 <- sum(y)
+ n0 <- sum(1-y)
+ nx0n1 <- tapply(1-y,x,sum)*n1
+ nx1n0 <- tapply(y,x,sum) *n0
+ nx0n1[which(nx0n1==0)]<-n1
+ nx1n0[which(nx1n0==0)]<-n0
+ return(log(nx0n1)-log(nx1n0))
+}
+
+woe.assign <- function(wtab, x) {
+ w<-rep(0,length(x))
+ ni<-names(wtab)
+ for (i in 1:length(ni)) {
+ w[which(x==ni[i])]<-wtab[i]
+ }
+ return(w)
+}
+```
+
+
+```{r}
+credit4$EmploymentDurationCurrentEmployer_woe<-woe.assign(woe.tab(credit4$EmploymentDurationCurrentEmployer, credit4$Status),credit4$EmploymentDurationCurrentEmployer)
+credit4$EmploymentDurationCurrentEmployer <- credit4$EmploymentDurationCurrentEmployer_woe
+credit4 <- credit4[,-47]
+```
+
+
+```{r}
+credit4$Rating_woe<-woe.assign(woe.tab(credit4$Rating, credit4$Status),credit4$Rating)
+credit4$Rating <- credit4$Rating_woe
+credit4 <- credit4[,-47]
+```
+
+
+```{r}
+credit4$LoanDate_woe<-woe.assign(woe.tab(credit4$LoanDate, credit4$Status),credit4$LoanDate)
+credit4$LoanDate <- credit4$LoanDate_woe
+credit4 <- credit4[,-47]
+```
+
+
+```{r}
+credit4$LastPaymentOn_woe<-woe.assign(woe.tab(credit4$LastPaymentOn, credit4$Status),credit4$LastPaymentOn)
+```
+
+
+```{r}
+#replace the missing value by the mean value.
+for(i in 1:ncol(credit4)){
+  credit4[is.na(credit4[,i]), i] <- mean(credit4[,i], na.rm = TRUE)
+}
+summary(credit4)
+```
+
+```{r, fig.height = 3, fig.width = 8}
+par(mfrow=c(2,3))
+v1<- hist(credit4$BidsApi)
+v2<- hist(credit4$RefinanceLiabilities)
+v3<- hist(credit4$DebtToIncome)
+v4<- hist(credit4$NoOfPreviousLoansBeforeLoan)
+v5<- hist(credit4$AmountOfPreviousLoansBeforeLoan)
+v6<- hist(credit4$PreviousEarlyRepaymentsCountBeforeLoan)
+```
+
+
+
+```{r}
+credit4$BidsApi<-ifelse(credit4$BidsApi==0,0,1)
+credit4$RefinanceLiabilities<-ifelse(credit4$RefinanceLiabilities==0,0,1)
+credit4$DebtToIncome<-ifelse(credit4$DebtToIncome==0,0,1)
+credit4$NoOfPreviousLoansBeforeLoan<-ifelse(credit4$NoOfPreviousLoansBeforeLoan==0,0,1)
+credit4$AmountOfPreviousLoansBeforeLoan<-ifelse(credit4$AmountOfPreviousLoansBeforeLoan==0,0,1)
+credit4$PreviousEarlyRepaymentsCountBeforeLoan<-ifelse(credit4$PreviousEarlyRepaymentsCountBeforeLoan==0,0,1)
+```
+
+```{r}
+summary(credit4)
+credit5<-credit4
+```
+
+```{r, fig.height = 10.0, fig.width = 8}
+par(mfrow=c(5,3))
+cols1 <- c("BidsPortfolioManager","BidsManual","MonthlyPayment","IncomeTotal","LiabilitiesTotal")
+credit4[cols1] <- credit4[cols1]+0.1
+
+v1<- hist(credit4$BidsPortfolioManager)
+v2<- hist(log(credit4$BidsPortfolioManager))
+v3<- hist(sqrt(credit4$BidsPortfolioManager))
+v4<- hist(credit4$BidsManual)
+v5<- hist(log(credit4$BidsManual))
+v6<- hist(sqrt(credit4$BidsManual))
+v7<- hist(credit4$MonthlyPayment)
+v8<- hist(log(credit4$MonthlyPayment))
+v9<- hist(sqrt(credit4$MonthlyPayment))
+v10<- hist(credit4$IncomeTotal)
+v11<- hist(log(credit4$IncomeTotal))
+v12<- hist(sqrt(credit4$IncomeTotal))
+v13<- hist(credit4$LiabilitiesTotal)
+v14<- hist(log(credit4$LiabilitiesTotal))
+v15<- hist(sqrt(credit4$LiabilitiesTotal))
+
+credit5[cols1] <- credit5[cols1]+0.1
+
+cols11 <- c("BidsManual","IncomeTotal","LiabilitiesTotal")
+cols12 <- c("BidsPortfolioManager","MonthlyPayment")
+credit5[cols11] <- log(credit5[cols11])
+credit5[cols12] <- sqrt(credit5[cols12])
+
+```
+
+
+```{r, fig.height = 8.0, fig.width = 8}
+par(mfrow=c(4,3))
+
+cols2 <- c("PlannedInterestTillDate","PrincipalPaymentsMade","InterestAndPenaltyPaymentsMade","IncomeTotal","Amount")
+credit4[cols2] <- credit4[cols2]+0.1
+
+v1<- hist(credit4$PlannedInterestTillDate)
+v2<- hist(log(credit4$PlannedInterestTillDate))
+v3<- hist(sqrt(credit4$PlannedInterestTillDate))
+
+v4<- hist(credit4$PrincipalPaymentsMade)
+v5<- hist(log(credit4$PrincipalPaymentsMade))
+v6<- hist(sqrt(credit4$PrincipalPaymentsMade))
+
+v7<- hist(credit4$InterestAndPenaltyPaymentsMade)
+v8<- hist(log(credit4$InterestAndPenaltyPaymentsMade))
+v9<- hist(sqrt(credit4$InterestAndPenaltyPaymentsMade))
+
+v10<- hist(credit4$Amount)
+v11<- hist(log(credit4$Amount))
+v12<- hist(sqrt(credit4$Amount))
+
+credit5[cols2] <- credit5[cols2]+0.1
+
+cols21 <- c("PrincipalPaymentsMade","InterestAndPenaltyPaymentsMade")
+credit5[cols21] <- log(credit5[cols21])
+
+cols22 <- c("PlannedInterestTillDate","Amount")
+credit5[cols22] <- sqrt(credit5[cols22])
+```
+
+
+
+
+```{r}
+datasub1 <- credit5[credit5$LastPaymentOn <="2020-02-21",]
+datasub1<-datasub1[ , !(names(datasub1) %in% c("LastPaymentOn"))]
+datasub2 <- credit5[credit5$LastPaymentOn >"2020-02-21",]
+datasub2<-datasub2[ , !(names(datasub2) %in% c("LastPaymentOn"))]
+```
+
+As there are too many predictors, it is neccessary to reduce the number of predictors in order to avoid overfitting or multicollinearity.
+
+Use LASSO to select the whether the variable need to select or not. 0 indicates coefficients shrunk to zero and hence de-selected. Therefore, there are 21 predictors left.
+
+```{r}
+set.seed(1)
+cvfit = glmnet::cv.glmnet(as.matrix (datasub1[c(1:36,38:46)] ), datasub1[,37], family = "binomial", type.measure = "class")
+coef(cvfit, s = "lambda.min")
+```
+
+```{r}
+datasub1new<-datasub1[ , !(names(datasub1) %in% c("NewCreditCustomer", "Interest", "MaritalStatus", "FreeCash", "ExpectedLoss","AmountOfPreviousLoansBeforeLoan"))]
+```
+
+```{r}
+ n1=nrow(datasub1new)
+ n2=ceiling(n1/3)
+ ix<-sample(n1, n2, replace=FALSE)
+ datasub1newtest <- datasub1new[ix,]
+ datasub1newtrain <- datasub1new[-ix,]
+ 
+glm1.out <- glm(Status~.,family=binomial(link='logit'),data=datasub1newtrain)
+ summary(glm1.out)
+```
+
+```{r}
+yp1 <- predict(glm1.out, datasub1newtrain, type="link")
+yp2 <- predict(glm1.out, datasub1newtest, type="link")
+yp3 <- predict(glm1.out, datasub2, type="link")
+ roc <- function(y, s)
+{
+ yav <- rep(tapply(y, s, mean), table(s))
+ rocx <- cumsum(yav)
+ rocy <- cumsum(1 - yav)
+ area <- sum(yav * (rocy - 0.5 * (1 - yav)))
+ x1 <- c(0, rocx)/sum(y)
+ y1 <- c(0, rocy)/sum(1 - y)
+ auc <- area/(sum(y) * sum(1 - y))
+ print(auc)
+ plot(x1,y1,"l")
+ }
+```
+
+```{r}
+ roc(datasub1newtrain$Status, yp1)
+```
+
+```{r}
+ roc(datasub1newtest$Status, yp2)
+```
+```{r}
+ roc(datasub2$Status, yp3)
+```
+
+
+
+```{r}
+set.seed(1)
+cvfit = glmnet::cv.glmnet(as.matrix (datasub2[c(1:36,38:46)] ), datasub2[,37], family = "binomial", type.measure = "class")
+coef(cvfit, s = "lambda.min")
+```
+
+```{r}
+datasub2new<-datasub2[ , !(names(datasub2) %in% c("ExpectedLoss", "PreviousEarlyRepaymentsCountBeforeLoan","AmountOfPreviousLoansBeforeLoan"))]
+```
+
+```{r}
+ n11=nrow(datasub2new)
+ n22=ceiling(n1/3)
+ ix1<-sample(n11, n22, replace=FALSE)
+ datasub2newtest <- datasub2new[ix1,]
+ datasub2newtrain <- datasub2new[-ix1,]
+ 
+glm1.out <- glm(Status~.,family=binomial(link='logit'),data=datasub2newtrain)
+ summary(glm1.out)
+```
+
+```{r}
+yp4 <- predict(glm1.out, datasub2newtrain, type="link")
+yp5 <- predict(glm1.out, datasub2newtest, type="link")
+```
+
+```{r}
+ roc(datasub2newtrain$Status, yp4)
+```
+
+```{r}
+ roc(datasub2newtest$Status, yp5)
+```
+
